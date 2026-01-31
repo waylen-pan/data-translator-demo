@@ -1,0 +1,25 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# 配置与数据校验
+pydantic>=2.9.0
+pydantic-settings>=2.2.1
+python-dotenv>=1.0.1
+
+# 数据库
+SQLAlchemy>=2.0.0
+
+# 任务队列
+celery>=5.4.0
+redis>=5.0.0
+
+# 文件上传/处理
+python-multipart>=0.0.9
+pandas>=2.2.0
+openpyxl>=3.1.0
+
+# LLM（火山方舟 OpenAI 兼容）
+openai>=2.8.1
+
+# 测试
+pytest>=8.0.0
