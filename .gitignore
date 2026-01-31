@@ -1,0 +1,20 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+
+# ===== Backend =====
+backend/venv/
+backend/.env
+backend/.pytest_cache/
+backend/*.db
+backend/storage/
+
+# ===== Frontend =====
+frontend/node_modules/
+frontend/dist/
+
+# ===== OS / IDE =====
+.DS_Store
+.cursor/
+.vscode/
+
