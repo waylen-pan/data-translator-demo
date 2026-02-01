@@ -1,6 +1,106 @@
 services:
+  web:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      # 对外只暴露 Web 入口（默认 8080，可通过 WEB_PORT 改为 80 等）
+      - "${WEB_PORT:-8080}:80"
+
+  api:
+    image: data-translator-backend
+    build:
+      context: ./backend
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # 基础
+      APP_ENV: "prod"
+      APP_DEBUG: "false"
+      # 生产默认同源（Nginx 反代 /api），无需 CORS；置空后 FastAPI 不会启用 CORS middleware
+      CORS_ALLOW_ORIGINS: "[]"
+
+      # Redis / Celery（容器网络内访问）
+      REDIS_URL: "redis://redis:6379/0"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+
+      # DB：生产默认使用 Postgres（如需改为 SQLite/外部 DB，可自行覆盖该变量）
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:-data_translator}:${POSTGRES_PASSWORD:-data_translator}@db:5432/${POSTGRES_DB:-data_translator}"
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      # API 与 worker 共享存储：uploads/exports 等
+      - app_data:/app/storage
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=2).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    image: data-translator-backend
+    build:
+      context: ./backend
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      APP_ENV: "prod"
+      APP_DEBUG: "false"
+      CORS_ALLOW_ORIGINS: "[]"
+      REDIS_URL: "redis://redis:6379/0"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:-data_translator}:${POSTGRES_PASSWORD:-data_translator}@db:5432/${POSTGRES_DB:-data_translator}"
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      - app_data:/app/storage
+    command: ["celery", "-A", "app.core.celery_app.celery_app", "worker", "-l", "info"]
+
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    command: ["redis-server", "--appendonly", "no"]
+    restart: unless-stopped
+    # 仅用于 broker/backend/caching，不需要持久化
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-data_translator}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-data_translator}"
+      POSTGRES_DB: "${POSTGRES_DB:-data_translator}"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  app_data:
+  pg_data:

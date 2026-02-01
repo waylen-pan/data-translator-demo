@@ -8,6 +8,8 @@ python-dotenv>=1.0.1
 
 # 数据库
 SQLAlchemy>=2.0.0
+# Postgres 驱动（Docker 生产默认使用 Postgres）
+psycopg[binary]
 
 # 任务队列
 celery>=5.4.0

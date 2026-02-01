@@ -2,7 +2,63 @@
 
 目标：上传 JSON/JSONL/CSV/XLSX 数据，选择要翻译的字段/列与行数，后台调用大模型翻译成简体中文，并导出下载。
 
-## 运行前准备
+## Docker 一键部署（推荐：服务器部署最省心）
+
+前端会被打包成静态资源，由 Nginx 提供页面并反代 `/api/*` 到后端；后端拆分为 `api`（FastAPI）+ `worker`（Celery），并使用 Redis + Postgres。
+
+### 1) 准备环境变量
+
+在项目根目录执行：
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+编辑 `backend/.env`，至少配置：
+
+- `ARK_API_KEY=...`（不配置会导致真实翻译失败；本地联调可在 `backend/.env` 里设置 `TRANSLATION_DRY_RUN=true`）
+
+### 2) 启动
+
+在 `data-translator-demo/` 目录执行：
+
+```bash
+docker compose up -d --build
+```
+
+访问：
+
+- `http://<server-ip>:8080`（默认端口）
+
+### 3) 常用运维命令
+
+查看日志：
+
+```bash
+docker compose logs -f web
+docker compose logs -f api
+docker compose logs -f worker
+```
+
+停止：
+
+```bash
+docker compose down
+```
+
+清理数据（会删除 Postgres 数据卷与上传/导出文件，谨慎执行）：
+
+```bash
+docker compose down -v
+```
+
+### 4) 可选配置（通过环境变量）
+
+- `WEB_PORT`：对外 Web 端口（默认 `8080`），例如临时改为 80：`WEB_PORT=80 docker compose up -d --build`
+- `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`：Postgres 账号与库名（默认都是 `data_translator`，建议线上改掉）
+- `TRANSLATION_DRY_RUN`：是否使用 mock 翻译（默认 `false`；在 `backend/.env` 里设置，用于没有 Key 时跑通全链路）
+
+## 运行前准备（本地开发）
 
 - Node.js（建议 18+ 或 20+）
 - Python 3.12
@@ -14,10 +70,17 @@
 
 ### 1) 启动 Redis
 
-方式 A（Docker，可选）：在 `data-translator-demo/` 目录执行：
+方式 A（Docker，可选）：用单独的 redis 容器（会映射到本机 `6379`，适合“本地跑后端/worker”的开发模式）：
 
 ```bash
-docker compose up -d
+docker run -d --name data-translator-redis -p 6379:6379 redis:7-alpine \
+  redis-server --port 6379 --save "" --appendonly no
+```
+
+停止并删除该 redis 容器（可选）：
+
+```bash
+docker rm -f data-translator-redis
 ```
 
 方式 B（本机 redis-server）：任意目录执行：
