@@ -79,8 +79,9 @@ def translate_job_task(job_id: str) -> dict[str, str]:
     # 开发联调：允许使用 mock 翻译，便于在没有 Key 的情况下走通全链路
     if settings.TRANSLATION_DRY_RUN:
         class _MockTranslator:
-            def translate_items(self, xs: list[TranslateItem], *, target_lang: str) -> dict[str, str]:  # noqa: ARG002
-                return {it.id: f"【mock】{it.text}" for it in xs}
+            def translate_items_stream(self, xs: list[TranslateItem], *, target_lang: str):  # noqa: ANN001,ARG002
+                for it in xs:
+                    yield (it.id, f"【mock】{it.text}")
 
         translator: Any = _MockTranslator()
     else:
@@ -102,15 +103,29 @@ def translate_job_task(job_id: str) -> dict[str, str]:
     # - 使用 settings.TRANSLATION_BATCH_SIZE 作为可调参数（默认 20）
     cell_batch_size = max(1, int(getattr(settings, "TRANSLATION_BATCH_SIZE", 20) or 20))
     try:
-        for i in range(0, len(items), cell_batch_size):
-            chunk = items[i : i + cell_batch_size]
-            chunk_map = translator.translate_items(chunk, target_lang=target_lang)
-            translations.update(chunk_map)
+        # 说明：
+        # - 翻译器内部会尽量并发地跑满 RPM；这里不要再用 batch 切片去“限制翻译提交”；
+        # - `cell_batch_size` 只用于控制“写 DB 更新进度”的频率。
+        done = 0
+        last_flushed_done = 0
+        for item_id, translated_text in translator.translate_items_stream(items, target_lang=target_lang):
+            translations[str(item_id)] = str(translated_text or "")
+            done += 1
 
+            if done - last_flushed_done >= cell_batch_size:
+                with SessionLocal() as db:
+                    job = db.get(TranslationJob, job_id)
+                    if job:
+                        job.progress_done = min(int(job.progress_total or 0), done)
+                        db.commit()
+                last_flushed_done = done
+
+        # 收尾：把最后不足一个 batch 的进度写回
+        if done != last_flushed_done:
             with SessionLocal() as db:
                 job = db.get(TranslationJob, job_id)
                 if job:
-                    job.progress_done = min(int(job.progress_total or 0), int(job.progress_done or 0) + len(chunk))
+                    job.progress_done = min(int(job.progress_total or 0), done)
                     db.commit()
     except Exception as e:  # noqa: BLE001
         with SessionLocal() as db:

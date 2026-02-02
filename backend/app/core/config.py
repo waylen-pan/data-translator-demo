@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # --- 翻译策略 ---
     TRANSLATION_MAX_CELL_CHARS: int = 10000
     TRANSLATION_BATCH_SIZE: int = 20
+    # 翻译并发度（进程内）：用于提升吞吐，尽量打满 RPM
+    # 注意：这是“同一 Celery worker 进程内”的并发请求数上限；
+    # 若你启动了多个 worker 进程/实例，整体对外请求速率会叠加。
+    TRANSLATION_MAX_CONCURRENCY: int = 500
 
     # 开发调试：不调用外部模型，使用 mock 翻译（用于本地联调）
     TRANSLATION_DRY_RUN: bool = False

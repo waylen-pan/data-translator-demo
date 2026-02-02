@@ -13,11 +13,13 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import random
+import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterator, Optional
 
 import redis
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
@@ -116,44 +118,83 @@ class ArkBatchTranslator:
         self._disable_thinking = bool(disable_thinking)
         self._max_cell_chars = int(max_cell_chars or 10000)
         self._limiter = SmoothRpmLimiter(int(rpm or 1))
-        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=request_timeout_seconds)
+        # 说明：
+        # - 为避免多线程并发时共享 client 的潜在问题，这里使用“线程本地 client”。
+        # - 这能让我们在提升吞吐（并发请求）时更稳健。
+        self._api_key = api_key
+        self._base_url = base_url
+        self._timeout_seconds = float(request_timeout_seconds)
+        self._client_local = threading.local()
         self._cache = RedisTranslationCache(settings.REDIS_URL) if enable_redis_cache else None
 
     def translate_items(self, items: list[TranslateItem], *, target_lang: str) -> dict[str, str]:
         """翻译一组单元并返回映射：item_id -> translated_text。"""
+        return dict(self.translate_items_stream(items, target_lang=target_lang))
 
-        # 1) 拆分长文本
-        expanded: list[TranslateItem] = []
-        parent_to_part_ids: dict[str, list[str]] = {}
-        for it in items:
-            text = str(it.text or "")
-            if not text.strip():
-                parent_to_part_ids[it.id] = []
-                continue
-            parts = split_text_by_max_chars(text, max_chars=self._max_cell_chars)
-            if len(parts) == 1:
-                expanded.append(it)
-                parent_to_part_ids[it.id] = [it.id]
-                continue
-            part_ids: list[str] = []
-            for idx, part in enumerate(parts):
-                pid = f"{it.id}__part_{idx}"
-                part_ids.append(pid)
-                expanded.append(TranslateItem(id=pid, text=part, hint=it.hint))
-            parent_to_part_ids[it.id] = part_ids
+    def translate_items_stream(self, items: list[TranslateItem], *, target_lang: str) -> Iterator[tuple[str, str]]:
+        """流式翻译：尽可能早地产出结果（按“原始 item”维度产出）。
 
-        translated_parts: dict[str, str] = {}
-        for it in expanded:
-            translated_parts[it.id] = self._translate_single_text(it.text, target_lang=target_lang)
+        背景：
+        - 之前 `TRANSLATION_BATCH_SIZE` 在任务层被用于“分块翻译 + 更新进度”，
+          会让人误以为“系统只有 20 并发/20 rpm”。实际上它只是进度写库批次。
+        - 真正限制吞吐的是：翻译器内部对 expanded items 的模型调用是串行的。
 
-        # 4) 合并分片
-        merged: dict[str, str] = {}
-        for parent_id, part_ids in parent_to_part_ids.items():
-            if not part_ids:
-                merged[parent_id] = ""
-                continue
-            merged[parent_id] = "".join([translated_parts.get(pid, "") for pid in part_ids])
-        return merged
+        这里的策略：
+        - 一次性把所有 item（含长文本切分后的 part）提交到线程池并发执行；
+        - 仍通过 `SmoothRpmLimiter` 做进程内 RPM 平滑限流；
+        - 对外只在同一 parent 的所有 part 完成后，才 yield 合并后的结果。
+        """
+
+        # 并发度：用于提升吞吐，尽量打满 RPM
+        max_workers = int(getattr(settings, "TRANSLATION_MAX_CONCURRENCY", 50) or 50)
+        max_workers = max(1, max_workers)
+
+        # parent -> 预期 part 数量 / 已完成数量 / part 结果缓冲
+        parent_expected: dict[str, int] = {}
+        parent_done: dict[str, int] = {}
+        parent_buf: dict[str, list[Optional[str]]] = {}
+
+        # future -> (parent_id, part_idx)
+        future_meta: dict[concurrent.futures.Future[str], tuple[str, int]] = {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 1) 提交任务（part 级别）
+            for it in items:
+                parent_id = it.id
+                text = str(it.text or "")
+                if not text.strip():
+                    yield (parent_id, "")
+                    continue
+
+                parts = split_text_by_max_chars(text, max_chars=self._max_cell_chars)
+                parent_expected[parent_id] = len(parts)
+                parent_done[parent_id] = 0
+                parent_buf[parent_id] = [None] * len(parts)
+
+                for idx, part in enumerate(parts):
+                    fut = executor.submit(self._translate_single_text, part, target_lang=target_lang)
+                    future_meta[fut] = (parent_id, idx)
+
+            # 2) 消费完成的 part；当 parent 所有 part 就绪后合并产出
+            for fut in concurrent.futures.as_completed(future_meta):
+                parent_id, idx = future_meta[fut]
+                out = fut.result()
+
+                buf = parent_buf.get(parent_id)
+                if buf is None:
+                    # 防御性兜底：理论上不应发生
+                    continue
+
+                buf[idx] = out
+                parent_done[parent_id] = int(parent_done.get(parent_id, 0)) + 1
+
+                if parent_done[parent_id] >= int(parent_expected.get(parent_id, 0)):
+                    merged = "".join([(x or "") for x in buf])
+                    yield (parent_id, merged)
+                    # 释放内存，避免大批量时持续增长
+                    parent_buf.pop(parent_id, None)
+                    parent_expected.pop(parent_id, None)
+                    parent_done.pop(parent_id, None)
 
     def _translate_single_text(self, text: str, *, target_lang: str) -> str:
         """翻译单段文本（带缓存、限流、重试）。
@@ -188,7 +229,7 @@ class ArkBatchTranslator:
                 }
                 if self._disable_thinking:
                     kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-                resp = self._client.chat.completions.create(**kwargs)
+                resp = self._get_client().chat.completions.create(**kwargs)
                 out = resp.choices[0].message.content or ""
                 if self._cache:
                     self._cache.set(model=self.model, target_lang=target_lang, text=s, translated_text=out)
@@ -206,6 +247,15 @@ class ArkBatchTranslator:
             time.sleep(wait)
 
         raise RuntimeError(f"模型调用失败（多次重试仍失败）: {last_exc}")
+
+    def _get_client(self) -> OpenAI:
+        """获取线程本地 OpenAI client。"""
+
+        client = getattr(self._client_local, "client", None)
+        if client is None:
+            client = OpenAI(api_key=self._api_key, base_url=self._base_url, timeout=self._timeout_seconds)
+            self._client_local.client = client
+        return client
 
 
 def build_default_translator() -> ArkBatchTranslator:
