@@ -46,3 +46,27 @@ export type JobStatusResponse = {
   download_url?: string | null
 }
 
+export type JobListItem = {
+  job_id: string
+  file_id: string
+  filename: string
+  status: string
+  mode: string
+  target_lang: string
+  row_limit: number
+  selected_fields: string[]
+  progress_total: number
+  progress_done: number
+  progress_failed: number
+  error_message: string
+  download_url?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type JobListResponse = {
+  jobs: JobListItem[]
+  limit: number
+  offset: number
+}
+

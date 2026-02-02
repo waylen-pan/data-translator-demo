@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -22,10 +22,16 @@ router = APIRouter()
 
 @router.post("/upload", response_model=UploadFileResponse)
 def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ) -> UploadFileResponse:
     """上传文件并返回格式检测结果、预览与字段/列候选。"""
+
+    # 由中间件注入（Cookie dt_client_id）
+    client_id = getattr(request.state, "client_id", "") or ""
+    if not client_id:
+        raise HTTPException(status_code=500, detail="匿名会话未初始化，请刷新后重试")
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="缺少文件名")
@@ -71,6 +77,7 @@ def upload_file(
     # 落库：保存“相对路径”，方便迁移运行
     record = UploadedFile(
         id=file_id,
+        client_id=client_id,
         filename=file.filename,
         content_type=file.content_type or "",
         size_bytes=size_bytes,

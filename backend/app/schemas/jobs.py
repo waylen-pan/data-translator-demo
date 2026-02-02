@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -60,4 +61,35 @@ class JobStatusResponse(BaseModel):
 
     error_message: str = ""
     download_url: Optional[str] = None
+
+
+class JobListItem(BaseModel):
+    """任务列表项（用于“关页后找回”与历史查看）。"""
+
+    job_id: str
+    file_id: str
+    filename: str = ""
+    status: str
+    mode: str
+    target_lang: str
+    row_limit: int
+    selected_fields: list[str] = Field(default_factory=list)
+
+    progress_total: int
+    progress_done: int
+    progress_failed: int
+
+    error_message: str = ""
+    download_url: Optional[str] = None
+
+    created_at: datetime
+    updated_at: datetime
+
+
+class JobListResponse(BaseModel):
+    """按匿名会话（client_id）过滤后的任务列表。"""
+
+    jobs: list[JobListItem] = Field(default_factory=list)
+    limit: int
+    offset: int
 

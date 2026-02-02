@@ -1,4 +1,4 @@
-import type { CreateJobRequest, CreateJobResponse, JobStatusResponse, UploadFileResponse } from "@/lib/types"
+import type { CreateJobRequest, CreateJobResponse, JobListResponse, JobStatusResponse, UploadFileResponse } from "@/lib/types"
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, init)
@@ -50,5 +50,15 @@ export async function getJob(jobId: string): Promise<JobStatusResponse> {
   return await apiFetch<JobStatusResponse>(`/api/v1/jobs/${jobId}`, {
     method: "GET",
   })
+}
+
+export async function listJobs(params?: { limit?: number; offset?: number }): Promise<JobListResponse> {
+  const limit = params?.limit
+  const offset = params?.offset
+  const qs = new URLSearchParams()
+  if (typeof limit === "number") qs.set("limit", String(limit))
+  if (typeof offset === "number") qs.set("offset", String(offset))
+  const suffix = qs.toString() ? `?${qs.toString()}` : ""
+  return await apiFetch<JobListResponse>(`/api/v1/jobs${suffix}`, { method: "GET" })
 }
 

@@ -9,6 +9,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.core.time import utcnow
 
 
 class TranslationJob(Base):
@@ -17,6 +18,10 @@ class TranslationJob(Base):
     __tablename__ = "translation_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+
+    # 匿名会话归属（同一浏览器标识，来自 Cookie dt_client_id）
+    # - 任务查询/下载等必须校验该字段，否则 job_id 会变成“访问钥匙”
+    client_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
 
     file_id: Mapped[str] = mapped_column(String(36), ForeignKey("uploaded_files.id"), index=True)
 
@@ -43,10 +48,10 @@ class TranslationJob(Base):
     # 导出文件相对路径（相对 backend/）
     result_path: Mapped[str] = mapped_column(String(1024), default="")
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=utcnow,
+        onupdate=utcnow,
     )
 

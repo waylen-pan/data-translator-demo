@@ -9,6 +9,7 @@ from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.core.time import utcnow
 
 
 class UploadedFile(Base):
@@ -17,6 +18,10 @@ class UploadedFile(Base):
     __tablename__ = "uploaded_files"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+
+    # 匿名会话归属（同一浏览器标识，来自 Cookie dt_client_id）
+    # - 不做账号体系时，用它隔离不同浏览器之间的数据访问
+    client_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
 
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str] = mapped_column(String(128), default="")
@@ -28,5 +33,5 @@ class UploadedFile(Base):
     # 相对路径（相对 backend/），便于迁移运行
     storage_path: Mapped[str] = mapped_column(String(1024))
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

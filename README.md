@@ -2,6 +2,21 @@
 
 目标：上传 JSON/JSONL/CSV/XLSX 数据，选择要翻译的字段/列与行数，后台调用大模型翻译成简体中文，并导出下载。
 
+## 任务找回机制（无登录）
+
+本项目不做账号体系，但支持“关网页后仍可找回任务结果”：
+
+- 后端会给每个浏览器下发一个匿名会话 Cookie：`dt_client_id`（HttpOnly）
+- 上传文件与翻译任务都会绑定该 `client_id`，并在查询/下载时做归属校验
+- 因此：**同一浏览器**关闭页面后再打开仍可看到历史任务并下载结果；**换浏览器/无痕**即使拿到 `job_id` 也无法访问
+
+### 升级注意（破坏性变更）
+
+该能力引入了数据库字段 `client_id`，升级需要重建数据库/存储数据：
+
+- Docker 部署：执行 `docker compose down -v` 清空数据卷后再 `docker compose up -d --build`
+- 本地 SQLite：删除 `backend/data_translator.db` 后重启后端（会重新建表）
+
 ## Docker 一键部署（推荐：服务器部署最省心）
 
 前端会被打包成静态资源，由 Nginx 提供页面并反代 `/api/*` 到后端；后端拆分为 `api`（FastAPI）+ `worker`（Celery），并使用 Redis + Postgres。
