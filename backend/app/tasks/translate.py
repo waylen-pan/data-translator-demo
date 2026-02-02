@@ -47,22 +47,49 @@ def translate_job_task(job_id: str) -> dict[str, str]:
         file_path = resolve_backend_path(uploaded.storage_path)
         export_dir = resolve_backend_path(settings.EXPORTS_DIR)
 
+        # 防御式检查：上传记录存在，但文件可能已被清理/移动
+        if not file_path.exists():
+            job.status = "failed"
+            job.error_message = "找不到上传文件（文件可能已被清理或路径无效）"
+            db.commit()
+            return {"job_id": job_id, "status": "failed"}
+
         selected_fields_obj: Any = job.selected_fields
         selected_fields: list[str] = selected_fields_obj if isinstance(selected_fields_obj, list) else []
         selected_fields = [str(x) for x in selected_fields if str(x).strip()]
 
         # 2) 准备翻译单元（并初始化进度）
-        prepared = adapter.prepare(
-            file_path=file_path,
-            selected_fields=selected_fields,
-            row_limit=int(job.row_limit or 0),
-            mode=job.mode,
-            target_lang=job.target_lang,
-            export_dir=export_dir,
-            job_id=job.id,
-        )
+        try:
+            prepared = adapter.prepare(
+                file_path=file_path,
+                selected_fields=selected_fields,
+                row_limit=int(job.row_limit or 0),
+                mode=job.mode,
+                target_lang=job.target_lang,
+                export_dir=export_dir,
+                job_id=job.id,
+            )
+        except Exception as e:  # noqa: BLE001
+            job.status = "failed"
+            job.error_message = f"准备翻译单元失败: {str(e)[:200]}"
+            db.commit()
+            return {"job_id": job_id, "status": "failed"}
 
         items: list[TranslateItem] = prepared.items
+
+        # 边界情况：所选字段没有可翻译的文本内容
+        # - 可能原因：字段下全是数字/时间戳/null，或字段路径不匹配
+        # - 处理方式：明确告知用户，让其调整字段选择后重试
+        if not items:
+            job.status = "failed"
+            job.error_message = (
+                "所选字段没有可翻译的文本内容。"
+                "可能原因：字段值为空/数字/时间戳，或字段路径不存在。"
+                "请检查字段选择后重新创建任务。"
+            )
+            db.commit()
+            return {"job_id": job_id, "status": "failed"}
+
         job.status = "running"
         job.error_message = ""
         job.progress_total = len(items)
